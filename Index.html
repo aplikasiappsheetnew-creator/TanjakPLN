@@ -1260,6 +1260,47 @@
 
     <script>
       // ==========================================================================
+      // URL API GOOGLE APPS SCRIPT
+      // ==========================================================================
+      const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyNz2eptNMEdC-jYpzD3VgCJuAiRUD1ZPgH-ybHopct_jP7Rw_NSJ3pn9mWmg35CGUZ/exec";
+
+      /**
+       * Helper untuk menggantikan google.script.run dengan API fetch()
+       */
+      function callScriptAPI(action, data = {}) {
+        const promise = fetch(SCRIPT_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify({ action: action, data: data })
+        })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('HTTP status error ' + response.status);
+          }
+          return response.json();
+        });
+
+        return {
+          withSuccessHandler: function(successCb) {
+            this._success = successCb;
+            return this;
+          },
+          withFailureHandler: function(failureCb) {
+            this._failure = failureCb;
+            // Jalankan promise
+            promise.then(res => {
+              if (this._success) this._success(res);
+            }).catch(err => {
+              if (this._failure) this._failure(err);
+            });
+            return promise;
+          }
+        };
+      }
+
+      // ==========================================================================
       // STATE & VARIABEL GLOBAL
       // ==========================================================================
 
