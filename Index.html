@@ -2890,15 +2890,13 @@
         loadingModal.classList.add('active');
 
         try {
-        // 1. Ambil daftar No Agenda khusus ULP yang sedang login
-        const userUlp = localStorage.getItem('userUlp') || ""; // (Sesuaikan jika variabel ULP Anda berbeda)
-        
-        const existingAgendasList = await new Promise((resolve) => {
-          google.script.run
-            .withSuccessHandler(resolve)
-            .withFailureHandler(() => resolve([]))
-            .getExistingAgendaList(userUlp); // <-- Masukkan variabel ULP di sini
-        });
+          // 1. Ambil daftar No Agenda yang sudah ada di database Google Sheet
+          const existingAgendasList = await new Promise((resolve) => {
+            google.script.run
+              .withSuccessHandler(resolve)
+              .withFailureHandler(() => resolve([]))
+              .getExistingAgendaList();
+          });
 
           const existingAgendaSet = new Set(existingAgendasList.map(a => String(a).toLowerCase().trim()));
           const seenAgendasInExcel = new Set();
