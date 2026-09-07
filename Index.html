@@ -1259,46 +1259,74 @@
     
 
     <script>
-      // ==========================================================================
-      // URL API GOOGLE APPS SCRIPT
-      // ==========================================================================
-      const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyNz2eptNMEdC-jYpzD3VgCJuAiRUD1ZPgH-ybHopct_jP7Rw_NSJ3pn9mWmg35CGUZ/exec";
 
-      /**
-       * Helper untuk menggantikan google.script.run dengan API fetch()
-       */
-      function callScriptAPI(action, data = {}) {
-        const promise = fetch(SCRIPT_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-          },
-          body: JSON.stringify({ action: action, data: data })
-        })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error('HTTP status error ' + response.status);
-          }
-          return response.json();
-        });
+      // Konfigurasi URL Web App Google Apps Script Anda setelah di-deploy
+      const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyNz2eptNMEdC-jYpzD3VgCJuAiRUD1ZPgH-ybHopct_jP7Rw_NSJ3pn9mWmg35CGUZ/exec";
+
+      // Membuat Mocking google.script.run agar kompatibel dengan Netlify tanpa ubah kode
+      window.google = window.google || {};
+      window.google.script = window.google.script || {};
+
+      window.google.script.run = (function() {
+        function createProxy() {
+          let successHandler = null;
+          let failureHandler = null;
+
+          const proxy = new Proxy({}, {
+            get: function(target, prop) {
+              if (prop === 'withSuccessHandler') {
+                return function(callback) {
+                  successHandler = callback;
+                  return proxy;
+                };
+              }
+              if (prop === 'withFailureHandler') {
+                return function(callback) {
+                  failureHandler = callback;
+                  return proxy;
+                };
+              }
+
+              // Ini adalah fungsi backend yang dipanggil (misal: simpanDataAdmin)
+              return function(...args) {
+                const action = prop;
+                const payload = args.length === 1 ? args[0] : args;
+
+                fetch(GAS_WEB_APP_URL, {
+                  method: 'POST',
+                  body: JSON.stringify({ action: action, payload: payload })
+                })
+                .then(res => res.json())
+                .then(response => {
+                  if (response.success) {
+                    if (successHandler) successHandler(response.result);
+                  } else {
+                    if (failureHandler) {
+                      failureHandler(new Error(response.message));
+                    } else {
+                      alert("Error: " + response.message);
+                    }
+                  }
+                })
+                .catch(err => {
+                  if (failureHandler) {
+                    failureHandler(err);
+                  } else {
+                    alert("Koneksi gagal: " + err.message);
+                  }
+                });
+              };
+            }
+          });
+          return proxy;
+        }
 
         return {
-          withSuccessHandler: function(successCb) {
-            this._success = successCb;
-            return this;
-          },
-          withFailureHandler: function(failureCb) {
-            this._failure = failureCb;
-            // Jalankan promise
-            promise.then(res => {
-              if (this._success) this._success(res);
-            }).catch(err => {
-              if (this._failure) this._failure(err);
-            });
-            return promise;
-          }
+          withSuccessHandler: function(cb) { return createProxy().withSuccessHandler(cb); },
+          withFailureHandler: function(cb) { return createProxy().withFailureHandler(cb); }
         };
-      }
+      })();
+
 
       // ==========================================================================
       // STATE & VARIABEL GLOBAL
@@ -1565,9 +1593,9 @@
       // ==========================================================================
 
       /**
-       * Memproses verifikasi login pengguna ke server backend via API Fetch.
-       */
-      async function prosesLogin() {
+      * Memproses verifikasi login pengguna ke server backend Apps Script.
+      */
+      function prosesLogin() {
         const user = document.getElementById("loginUsername").value.trim();
         const pass = document.getElementById("loginPassword").value.trim();
         const statusEl = document.getElementById("loginStatus");
@@ -1587,40 +1615,85 @@
         loadingModal.classList.add('active');
         btnLogin.disabled = true;
 
-        try {
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "verifikasiLogin",
-              user: user,
-              pass: pass
-            })
-          });
+        // Panggilan Backend Google Apps Script
+        google.script.run
+          .withSuccessHandler(function(res) {
+            loadingModal.classList.remove('active');
+            btnLogin.disabled = false;
 
-          const res = await response.json();
+            if (res.success) {
+              // Simpan data sesi login di LocalStorage
+              localStorage.setItem('isLoggedIn', 'true');
+              localStorage.setItem('userRole', res.role);
+              localStorage.setItem('userNama', res.nama);
+              localStorage.setItem('userUlp', res.ulp || "");
+              localStorage.setItem('userUp3', res.up3 || "");
 
-          loadingModal.classList.remove('active');
-          btnLogin.disabled = false;
-
-          if (res.success) {
-            // Simpan data sesi login di LocalStorage
-            localStorage.setItem('isLoggedIn', 'true');
-            localStorage.setItem('userRole', res.role);
-            localStorage.setItem('userNama', res.nama);
-            localStorage.setItem('userUlp', res.ulp || "");
-            localStorage.setItem('userUp3', res.up3 || "");
-
-            inisialisasiNavigasi(res.role, res.nama, res.ulp, res.up3);
-          } else {
+              inisialisasiNavigasi(res.role, res.nama, res.ulp, res.up3);
+            } else {
+              statusEl.style.color = "red";
+              statusEl.innerText = res.message;
+            }
+          })
+          .withFailureHandler(function(err) {
+            loadingModal.classList.remove('active');
+            btnLogin.disabled = false;
             statusEl.style.color = "red";
-            statusEl.innerText = res.message;
-          }
-        } catch (err) {
-          loadingModal.classList.remove('active');
-          btnLogin.disabled = false;
-          statusEl.style.color = "red";
-          statusEl.innerText = "Error: " + err.message;
-        }
+            statusEl.innerText = "Error: " + err.message;
+          })
+          .verifikasiLogin(user, pass);
+      }
+
+      /**
+       * Memproses logout pengguna dan membersihkan sesi di browser.
+       */
+      function logout() {
+        // 1. Bersihkan isian form dan canvas tanda tangan (Petugas & Manager)
+        if (typeof resetFormPetugas === 'function') resetFormPetugas();
+        if (typeof resetFormManager === 'function') resetFormManager();
+
+        // 2. Reset variabel global transaksi Petugas
+        if (typeof CURRENT_FILE_BA_ID !== 'undefined') CURRENT_FILE_BA_ID = "";
+        if (typeof CURRENT_FILE_SPJBTL_ID !== 'undefined') CURRENT_FILE_SPJBTL_ID = "";
+        if (typeof CURRENT_NO_AGENDA !== 'undefined') CURRENT_NO_AGENDA = "";
+        if (typeof CURRENT_USER_ULP !== 'undefined') CURRENT_USER_ULP = "";
+        if (typeof CURRENT_USER_UP3 !== 'undefined') CURRENT_USER_UP3 = "";
+
+        // 3. Reset variabel global transaksi Manager
+        if (typeof MGR_PERMOHONAN_ID !== 'undefined') MGR_PERMOHONAN_ID = "";
+        if (typeof MGR_PK_ID !== 'undefined') MGR_PK_ID = "";
+        if (typeof MGR_BA_ID !== 'undefined') MGR_BA_ID = "";
+        if (typeof MGR_SPJBTL_ID !== 'undefined') MGR_SPJBTL_ID = "";
+        if (typeof MGR_NO_AGENDA !== 'undefined') MGR_NO_AGENDA = "";
+
+        // 4. Reset UI, input pencarian, & teks status Petugas
+        const searchInput = document.getElementById('searchNoAgenda');
+        const searchStatus = document.getElementById('searchStatus');
+        const formContent = document.getElementById('formPetugasContent');
+
+        if (searchInput) searchInput.value = "";
+        if (searchStatus) searchStatus.innerText = "";
+        if (formContent) formContent.classList.add('hidden');
+
+        // 5. Reset UI Manager (Sembunyikan form TTD, tampilkan kembali kontainer tabel)
+        const formManagerContent = document.getElementById('formManagerContent');
+        const managerTableContainer = document.getElementById('managerTableContainer');
+        const infoMgr = document.getElementById('infoManagerText');
+
+        if (formManagerContent) formManagerContent.classList.add('hidden');
+        if (managerTableContainer) managerTableContainer.classList.remove('hidden');
+        if (infoMgr) infoMgr.innerHTML = "";
+
+        // 6. Hapus data sesi lokal (localStorage)
+        const sessionKeys = ['isLoggedIn', 'userRole', 'userNama', 'userUlp', 'userUp3'];
+        sessionKeys.forEach(key => localStorage.removeItem(key));
+
+        // 7. Reset UI Form Login
+        document.getElementById('appContainer').classList.add('hidden');
+        document.getElementById('loginUsername').value = "";
+        document.getElementById('loginPassword').value = "";
+        document.getElementById('loginStatus').innerText = "";
+        document.getElementById('viewLogin').classList.remove('hidden');
       }
 
 
@@ -1653,7 +1726,7 @@
       // ==========================================================================
 
       /**
-       * Memproses penyimpanan data pelanggan baru dan 4 berkas PDF pendukung oleh Admin via API Fetch.
+       * Memproses penyimpanan data pelanggan baru dan 4 berkas PDF pendukung oleh Admin.
        */
       async function prosesSimpanAdmin() {
         const btnSimpan = document.getElementById('btnSimpanAdmin');
@@ -1699,7 +1772,7 @@
           return;
         }
 
-        // Validasi ID Pelanggan (Wajib 12 Digit Angka)
+        // Validasi No Agenda (Wajib 12 Digit Angka)
         if (!/^\d{12}$/.test(idPelanggan)) {
           tampilkanPopupNotif("Peringatan", "ID Pelanggan harus berupa 12 digit angka!", false);
           return;
@@ -1710,7 +1783,7 @@
         loadingText.innerText = "Menyimpan data...";
         loadingModal.classList.add('active');
 
-        // 5. Konversi 4 Berkas PDF ke Base64 Secara Paralel & Kirim via Fetch
+        // 5. Konversi 4 Berkas PDF ke Base64 Secara Paralel (Optimasi Kecepatan)
         try {
           const [
             b64Permohonan,
@@ -1724,8 +1797,7 @@
             getBase64FromFile(fileSpjbtl)
           ]);
 
-          const payload = {
-            action: "simpanDataAdmin",
+          const objData = {
             noAgenda,
             idPelanggan,
             nama,
@@ -1739,23 +1811,23 @@
             fileSpjbtl: b64Spjbtl
           };
 
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify(payload)
-          });
+          // 6. Kirim Data ke Backend Google Apps Script
+          google.script.run
+            .withSuccessHandler((res) => {
+              loadingModal.classList.remove('active');
+              btnSimpan.disabled = false;
 
-          const res = await response.json();
+              tampilkanPopupNotif("Berhasil disimpan", res.message, true);
+              resetFormAdminIndividu();
+            })
+            .withFailureHandler((err) => {
+              loadingModal.classList.remove('active');
+              btnSimpan.disabled = false;
 
-          loadingModal.classList.remove('active');
-          btnSimpan.disabled = false;
-
-          if (res.success) {
-            tampilkanPopupNotif("Berhasil disimpan", res.message, true);
-            resetFormAdminIndividu();
-          } else {
-            const pesanBersih = bersihkanPesanError(res.message);
-            tampilkanPopupNotif("Peringatan", pesanBersih, false);
-          }
+              const pesanBersih = bersihkanPesanError(err.message);
+              tampilkanPopupNotif("Peringatan", pesanBersih, false);
+            })
+            .simpanDataAdmin(objData);
 
         } catch (e) {
           loadingModal.classList.remove('active');
@@ -1809,9 +1881,9 @@
       // ==========================================================================
 
       /**
-       * Memproses pencarian arsip dokumen pelanggan berdasarkan Nomor Agenda via API Fetch.
+       * Memproses pencarian arsip dokumen pelanggan berdasarkan Nomor Agenda.
        */
-      async function cariArsipAgenda() {
+      function cariArsipAgenda() {
         const queryInput = document.getElementById('searchArsipAgenda');
         const statusEl   = document.getElementById('searchArsipStatus');
         const contentEl  = document.getElementById('hasilArsipContent');
@@ -1827,7 +1899,7 @@
         }
 
         // Validasi No Agenda (Wajib 18 Digit Angka)
-        if (!/^\d{18}$/.test(query)) {
+        if (!/^\d{18}$/.test(query)) { // <-- DIPERBAIKI: Menggunakan variabel `query`
           tampilkanPopupNotif("Peringatan", "No Agenda harus berupa 18 digit angka!", false);
           return;
         }
@@ -1840,72 +1912,64 @@
         const userUlpAktif = CURRENT_USER_ULP;
         const userUp3Aktif = CURRENT_USER_UP3;
 
-        try {
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "cariDataArsipByAgenda",
-              query: query,
-              ulp: userUlpAktif,
-              up3: userUp3Aktif
-            })
-          });
+        // Panggilan Backend Google Apps Script
+        google.script.run
+          .withSuccessHandler((res) => {
+            if (res.found) {
+              statusEl.innerHTML = "<span style='color:#059669; font-weight:600;'>Arsip dokumen ditemukan</span>";
+              
+              // Render Informasi Pelanggan
+              infoEl.innerHTML = `
+                <b>No Agenda:</b> ${res.noAgenda}<br>
+                <b>ID Pelanggan:</b> ${res.idPelanggan}<br>
+                <b>Nama:</b> ${res.nama}<br>
+                <b>Alamat:</b> ${res.alamat}<br>
+                <b>Jenis Transaksi:</b> ${res.jenisTransaksi || '-'}
+              `;
 
-          const res = await response.json();
+              // Daftar Berkas Berkas Digital
+              const daftarBerkas = [
+                { label: "📄 Berkas Permohonan (Signed)", id: res.filePermohonanId, prefix: "Permohonan" },
+                { label: "📄 Perintah Kerja (PK) (Signed)", id: res.filePerintahKerjaId, prefix: "PK" },
+                { label: "📄 Berita Acara (BA) (Signed)",  id: res.fileBeritaAcaraId,  prefix: "BA" },
+                { label: "📄 SPJBTL (Signed)",             id: res.fileSpjbtlId,       prefix: "SPJBTL" }
+              ];
 
-          if (res.found) {
-            statusEl.innerHTML = "<span style='color:#059669; font-weight:600;'>Arsip dokumen ditemukan</span>";
-            
-            // Render Informasi Pelanggan
-            infoEl.innerHTML = `
-              <b>No Agenda:</b> ${res.noAgenda}<br>
-              <b>ID Pelanggan:</b> ${res.idPelanggan}<br>
-              <b>Nama:</b> ${res.nama}<br>
-              <b>Alamat:</b> ${res.alamat}<br>
-              <b>Jenis Transaksi:</b> ${res.jenisTransaksi || '-'}
-            `;
+              // Render Komponen List Berkas Secara Dinamis
+              filesEl.innerHTML = daftarBerkas.map(file => `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:10px 15px; border:1px solid #cbd5e1; border-radius:6px; margin-bottom:8px;">
+                  <span>${file.label}</span>
+                  <button class="btn-pilih" onclick="unduhMockArsip('${file.id}', '${file.prefix}_${res.noAgenda}')">Lihat</button>
+                </div>
+              `).join('');
 
-            // Daftar Berkas Berkas Digital
-            const daftarBerkas = [
-              { label: "📄 Berkas Permohonan (Signed)", id: res.filePermohonanId, prefix: "Permohonan" },
-              { label: "📄 Perintah Kerja (PK) (Signed)", id: res.filePerintahKerjaId, prefix: "PK" },
-              { label: "📄 Berita Acara (BA) (Signed)",  id: res.fileBeritaAcaraId,  prefix: "BA" },
-              { label: "📄 SPJBTL (Signed)",             id: res.fileSpjbtlId,       prefix: "SPJBTL" }
-            ];
-
-            // Render Komponen List Berkas Secara Dinamis
-            filesEl.innerHTML = daftarBerkas.map(file => `
-              <div style="display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:10px 15px; border:1px solid #cbd5e1; border-radius:6px; margin-bottom:8px;">
-                <span>${file.label}</span>
-                <button class="btn-pilih" onclick="unduhMockArsip('${file.id}', '${file.prefix}_${res.noAgenda}')">Lihat</button>
-              </div>
-            `).join('');
-
-            contentEl.classList.remove('hidden');
-          } else {
+              contentEl.classList.remove('hidden');
+            } else {
+              statusEl.innerHTML = "";
+              tampilkanPopupNotif("Pemberitahuan", res.message, false);
+            }
+          })
+          .withFailureHandler((err) => {
             statusEl.innerHTML = "";
-            tampilkanPopupNotif("Pemberitahuan", res.message, false);
-          }
-        } catch (err) {
-          statusEl.innerHTML = "";
-          tampilkanPopupNotif("Gagal", "Error: " + err.message, false);
+            tampilkanPopupNotif("Gagal", "Error: " + err.message, false);
+          })
+          .cariDataArsipByAgenda(query, userUlpAktif, userUp3Aktif);
         }
-      }
 
-      /**
-       * Membuka tautan pratinjau berkas PDF di Google Drive pada tab baru.
-       * @param {string} fileId - ID Berkas Google Drive.
-       * @param {string} namaFile - Nama label berkas.
-       */
-      function unduhMockArsip(fileId, namaFile) {
-        if (!fileId) {
-          tampilkanPopupNotif("Peringatan", "ID File PDF tidak tersedia!", false);
-          return;
+        /**
+         * Membuka tautan pratinjau berkas PDF di Google Drive pada tab baru.
+         * @param {string} fileId - ID Berkas Google Drive.
+         * @param {string} namaFile - Nama label berkas.
+         */
+        function unduhMockArsip(fileId, namaFile) {
+          if (!fileId) {
+            tampilkanPopupNotif("Peringatan", "ID File PDF tidak tersedia!", false);
+            return;
+          }
+          
+          const driveViewerUrl = `https://drive.google.com/file/d/${fileId}/view`;
+          window.open(driveViewerUrl, '_blank');
         }
-        
-        const driveViewerUrl = `https://drive.google.com/file/d/${fileId}/view`;
-        window.open(driveViewerUrl, '_blank');
-      }
 
       // ==========================================================================
       // MODUL PETUGAS: PENCARIAN BERDASARKAN WILAYAH LOGIN & PEMROSESAN DOKUMEN PDF
@@ -1923,7 +1987,7 @@
       }
 
       /**
-       * Memproses pencarian data agenda berdasarkan input pengguna via API Fetch.
+       * Memproses pencarian data agenda berdasarkan input pengguna.
        */
       async function cariAgenda() {
         const searchInput = document.getElementById('searchNoAgenda');
@@ -1947,117 +2011,118 @@
         searchStatus.innerText = "Mencari data agenda...";
         formContent.classList.add('hidden');
 
-        try {
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "cariDataByAgenda",
-              query: query,
-              ulp: CURRENT_USER_ULP,
-              up3: CURRENT_USER_UP3
-            })
-          });
-
-          const result = await response.json();
-
-          if (result.found) {
-            searchStatus.innerHTML = "<span style='color:green'>Data ditemukan, silakan lengkapi form</span>";
-            
-            CURRENT_FILE_BA_ID = result.fileBeritaAcaraId;
-            CURRENT_FILE_SPJBTL_ID = result.fileSpjbtlId;
-            CURRENT_NO_AGENDA = result.noAgenda;
-            
-            // SIMPAN JENIS TRANSAKSI KE VARIABEL GLOBAL
-            CURRENT_JENIS_TRANSAKSI = (result.jenisTransaksi || "").toUpperCase().trim();
-
-            infoPelangganText.innerHTML = `
-              <b>No Agenda:</b> ${result.noAgenda}<br>
-              <b>ID Pelanggan:</b> ${result.idPelanggan}<br>
-              <b>Nama:</b> ${result.nama}<br>
-              <b>Alamat:</b> ${result.alamat}<br>
-              <b>Jenis Transaksi:</b> ${result.jenisTransaksi || '-'}
-            `;
-
-            // LOGIKA PENGATURAN TAB & PANEL BERDASARKAN JENIS TRANSAKSI
-            const btnTabPasang = document.getElementById('btnTabPasang');
-            const btnTabBongkar = document.getElementById('btnTabBongkar');
-            const contentPasang = document.getElementById('contentPanelPasang');
-            const contentBongkar = document.getElementById('contentPanelBongkar');
-            const tabContainer = document.querySelector('.tab-container');
-
-            if (tabContainer) tabContainer.style.display = "flex";
-
-            if (CURRENT_JENIS_TRANSAKSI === "PASANG BARU") {
-              if (btnTabPasang) {
-                btnTabPasang.disabled = false;
-                btnTabPasang.style.opacity = "1";
-                btnTabPasang.style.cursor = "pointer";
-              }
+        google.script.run
+          .withSuccessHandler((result) => {
+            if (result.found) {
+              searchStatus.innerHTML = "<span style='color:green'>Data ditemukan, silakan lengkapi form</span>";
               
-              if (btnTabBongkar) {
-                btnTabBongkar.disabled = true;
-                btnTabBongkar.style.opacity = "0.4";
-                btnTabBongkar.style.cursor = "not-allowed";
-              }
-
-              if (contentPasang) contentPasang.classList.remove('hidden');
-              if (contentBongkar) contentBongkar.classList.add('hidden');
+              CURRENT_FILE_BA_ID = result.fileBeritaAcaraId;
+              CURRENT_FILE_SPJBTL_ID = result.fileSpjbtlId;
+              CURRENT_NO_AGENDA = result.noAgenda;
               
-              if (typeof switchTab === 'function') {
-                switchTab('pasang');
-              }
+              // SIMPAN JENIS TRANSAKSI KE VARIABEL GLOBAL
+              CURRENT_JENIS_TRANSAKSI = (result.jenisTransaksi || "").toUpperCase().trim();
 
-            } else if (CURRENT_JENIS_TRANSAKSI === "PERUBAHAN DAYA") {
-              if (btnTabPasang) {
-                btnTabPasang.disabled = false;
-                btnTabPasang.style.opacity = "1";
-                btnTabPasang.style.cursor = "pointer";
-              }
+              infoPelangganText.innerHTML = `
+                <b>No Agenda:</b> ${result.noAgenda}<br>
+                <b>ID Pelanggan:</b> ${result.idPelanggan}<br>
+                <b>Nama:</b> ${result.nama}<br>
+                <b>Alamat:</b> ${result.alamat}<br>
+                <b>Jenis Transaksi:</b> ${result.jenisTransaksi || '-'}
+              `;
 
-              if (btnTabBongkar) {
-                btnTabBongkar.disabled = false;
-                btnTabBongkar.style.opacity = "1";
-                btnTabBongkar.style.cursor = "pointer";
-              }
+              // ==========================================================
+              // LOGIKA PENGATURAN TAB & PANEL BERDASARKAN JENIS TRANSAKSI
+              // ==========================================================
+              const btnTabPasang = document.getElementById('btnTabPasang');
+              const btnTabBongkar = document.getElementById('btnTabBongkar');
+              const contentPasang = document.getElementById('contentPanelPasang');
+              const contentBongkar = document.getElementById('contentPanelBongkar');
+              const tabContainer = document.querySelector('.tab-container');
 
-              if (contentPasang) contentPasang.classList.remove('hidden');
-              if (contentBongkar) contentBongkar.classList.add('hidden');
+              // Pastikan container tab selalu muncul
+              if (tabContainer) tabContainer.style.display = "flex";
+
+              if (CURRENT_JENIS_TRANSAKSI === "PASANG BARU") {
+                // 1. Tab Pemasangan Aktif, Tab Pembongkaran di-disable
+                if (btnTabPasang) {
+                  btnTabPasang.disabled = false;
+                  btnTabPasang.style.opacity = "1";
+                  btnTabPasang.style.cursor = "pointer";
+                }
+                
+                if (btnTabBongkar) {
+                  btnTabBongkar.disabled = true;
+                  btnTabBongkar.style.opacity = "0.4"; // Efek visual disabled (redup)
+                  btnTabBongkar.style.cursor = "not-allowed";
+                }
+
+                // Tampilkan panel pasang, sembunyikan panel bongkar
+                if (contentPasang) contentPasang.classList.remove('hidden');
+                if (contentBongkar) contentBongkar.classList.add('hidden');
+                
+                if (typeof switchTab === 'function') {
+                  switchTab('pasang');
+                }
+
+              } else if (CURRENT_JENIS_TRANSAKSI === "PERUBAHAN DAYA") {
+                // 2. Kedua Tab Aktif & Bisa Diklik
+                if (btnTabPasang) {
+                  btnTabPasang.disabled = false;
+                  btnTabPasang.style.opacity = "1";
+                  btnTabPasang.style.cursor = "pointer";
+                }
+
+                if (btnTabBongkar) {
+                  btnTabBongkar.disabled = false;
+                  btnTabBongkar.style.opacity = "1"; // Normal kembali
+                  btnTabBongkar.style.cursor = "pointer";
+                }
+
+                // Default buka tab pasang dulu
+                if (contentPasang) contentPasang.classList.remove('hidden');
+                if (contentBongkar) contentBongkar.classList.add('hidden');
+                
+                if (typeof switchTab === 'function') {
+                  switchTab('pasang');
+                }
+              }
+              // ==========================================================
+              // Ambil tanggal hari ini format YYYY-MM-DD atau sesuai kebutuhan
+                const tanggalHariIni = new Date().toISOString().split('T')[0];
+
+                // Isi otomatis field tanggal jika kosong dari server
+                document.getElementById('pasang_pembatasTgl').value = result.pasang_pembatasTgl || tanggalHariIni;
+                document.getElementById('pasang_kwhTgl').value = result.pasang_kwhTgl || tanggalHariIni;
+
+                // Jika Perubahan Daya, isi juga bagian bongkar
+                if (CURRENT_JENIS_TRANSAKSI === "PERUBAHAN DAYA") {
+                  document.getElementById('bongkar_pembatasTgl').value = result.bongkar_pembatasTgl || tanggalHariIni;
+                  document.getElementById('bongkar_kwhTgl').value = result.bongkar_kwhTgl || tanggalHariIni;
+                }
+
+              formContent.classList.remove('hidden');
               
-              if (typeof switchTab === 'function') {
-                switchTab('pasang');
-              }
+              setTimeout(() => {
+                if (padPelanggan) padPelanggan.resizeCanvas();
+                if (padPetugas) padPetugas.resizeCanvas();
+              }, 100);
+            } else {
+              searchStatus.innerHTML = "";
+              CURRENT_JENIS_TRANSAKSI = "";
+              tampilkanPopupNotif("Pemberitahuan", result.message, false);
             }
-
-            const tanggalHariIni = new Date().toISOString().split('T')[0];
-
-            document.getElementById('pasang_pembatasTgl').value = result.pasang_pembatasTgl || tanggalHariIni;
-            document.getElementById('pasang_kwhTgl').value = result.pasang_kwhTgl || tanggalHariIni;
-
-            if (CURRENT_JENIS_TRANSAKSI === "PERUBAHAN DAYA") {
-              document.getElementById('bongkar_pembatasTgl').value = result.bongkar_pembatasTgl || tanggalHariIni;
-              document.getElementById('bongkar_kwhTgl').value = result.bongkar_kwhTgl || tanggalHariIni;
-            }
-
-            formContent.classList.remove('hidden');
-            
-            setTimeout(() => {
-              if (padPelanggan) padPelanggan.resizeCanvas();
-              if (padPetugas) padPetugas.resizeCanvas();
-            }, 100);
-          } else {
+          })
+          .withFailureHandler((err) => {
             searchStatus.innerHTML = "";
             CURRENT_JENIS_TRANSAKSI = "";
-            tampilkanPopupNotif("Pemberitahuan", result.message, false);
-          }
-        } catch (err) {
-          searchStatus.innerHTML = "";
-          CURRENT_JENIS_TRANSAKSI = "";
-          tampilkanPopupNotif("Gagal", "Error: " + err.message, false);
-        }
+            tampilkanPopupNotif("Gagal", "Error: " + err.message, false);
+          })
+          .cariDataByAgenda(query, CURRENT_USER_ULP, CURRENT_USER_UP3);
       }
 
       /**
-       * Memproses pengisian formulir, penandaan PDF, dan penyimpanan data akhir via API Fetch.
+       * Memproses pengisian formulir, penandaan PDF, dan penyimpanan data akhir.
        */
       async function prosesMultiPDF() {
         if (!CURRENT_FILE_BA_ID) {
@@ -2065,7 +2130,7 @@
           return;
         }
 
-        // 1. Ekstraksi Nilai Formulir
+        // 1. Ekstraksi Nilai Formulir Panel Pemasangan & Pembongkaran ke Dalam Objek
         const getValue = (id) => {
           const el = document.getElementById(id);
           return el ? el.value.trim() : "";
@@ -2123,14 +2188,17 @@
           bongkar_trafoTegangan: getValue('bongkar_trafoTegangan')
         };
 
+        // 1. Ambil jenis transaksi dari variabel global
         const jenisTransaksi = (CURRENT_JENIS_TRANSAKSI || "").toUpperCase().trim();
 
         // 2. Validasi Formulir Berdasarkan Jenis Transaksi
         let isFormIncomplete = false;
 
         if (jenisTransaksi === "PASANG BARU") {
+          // Jika Pasang Baru, HANYA validasi field yang berawalan 'pasang_'
           isFormIncomplete = Object.entries(formData).some(([key, val]) => key.startsWith('pasang_') && !val);
         } else {
+          // Jika Perubahan Daya, validasi seluruh field (Pemasangan & Pembongkaran)
           isFormIncomplete = Object.values(formData).some((val) => !val);
         }
 
@@ -2157,20 +2225,17 @@
         const ttdPetugasBase64 = padPetugas.toDataURL("image/png");
 
         try {
-          // 4. Pemrosesan PDF Berita Acara (BA) via Fetch
-          const responseBa = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({ action: "getPdfAsli", fileId: CURRENT_FILE_BA_ID })
+          // 4. Pemrosesan PDF Berita Acara (BA)
+          const baServer = await new Promise((res, rej) => {
+            google.script.run.withSuccessHandler(res).withFailureHandler(rej).getPdfAsli(CURRENT_FILE_BA_ID);
           });
-          const resBa = await responseBa.json();
-          const baServer = resBa.pdfBase64 || resBa.data || resBa.result;
 
           const docBa = await PDFLib.PDFDocument.load(base64ToUint8Array(baServer));
           const pageBa = docBa.getPages()[0];
           const fontTimes = await docBa.embedFont(PDFLib.StandardFonts.Helvetica);
           const fontSize = 8;
 
-          // 5. Pengisian Teks Dokumen BA
+          // 5. Pengisian Teks Dokumen BA: Data Pemasangan (Selalu Diisi)
           pageBa.drawText(formData.pasang_pembatasTgl, { x: 235, y: 572, size: fontSize, font: fontTimes });
           pageBa.drawText(`${formData.pasang_pembatasMerk} / ${formData.pasang_pembatasType} / ${formData.pasang_pembatasNomor}`, { x: 235, y: 562, size: fontSize, font: fontTimes });
           pageBa.drawText(`${formData.pasang_pembatasThnTera} / ${formData.pasang_pembatasThnBuat}`, { x: 235, y: 552, size: fontSize, font: fontTimes });
@@ -2189,6 +2254,7 @@
           pageBa.drawText(formData.pasang_trafoTegangan, { x: 345, y: 435, size: fontSize, font: fontTimes });
           pageBa.drawText(formData.pasang_faktorKali, { x: 235, y: 425, size: fontSize, font: fontTimes });
 
+          // --- Pengisian Data Pembongkaran (Hanya jika Perubahan Daya) ---
           if (jenisTransaksi === "PERUBAHAN DAYA") {
             pageBa.drawText(formData.bongkar_pembatasTgl, { x: 235 + 152, y: 572, size: fontSize, font: fontTimes });
             pageBa.drawText(`${formData.bongkar_pembatasMerk} / ${formData.bongkar_pembatasType} / ${formData.bongkar_pembatasNomor}`, { x: 235 + 152, y: 562, size: fontSize, font: fontTimes });
@@ -2209,6 +2275,7 @@
             pageBa.drawText(formData.bongkar_faktorKali, { x: 235 + 152, y: 425, size: fontSize, font: fontTimes });
           }
 
+          // Penyematan Tanda Tangan Digital pada BA
           const pngPelanggan = await docBa.embedPng(base64ToUint8Array(ttdPelangganBase64));
           const pngPetugas = await docBa.embedPng(base64ToUint8Array(ttdPetugasBase64));
 
@@ -2218,14 +2285,11 @@
           const base64BaFinal = uint8ArrayToBase64(await docBa.save());
           let base64SpjbtlFinal = "";
 
-          // 6. Pemrosesan PDF SPJBTL (Jika Ada) via Fetch
+          // 6. Pemrosesan PDF SPJBTL (Jika Ada)
           if (CURRENT_FILE_SPJBTL_ID) {
-            const responseSpjbtl = await fetch(WEB_APP_URL, {
-              method: "POST",
-              body: JSON.stringify({ action: "getPdfAsli", fileId: CURRENT_FILE_SPJBTL_ID })
+            const spjbtlServer = await new Promise((res, rej) => {
+              google.script.run.withSuccessHandler(res).withFailureHandler(rej).getPdfAsli(CURRENT_FILE_SPJBTL_ID);
             });
-            const resSpjbtl = await responseSpjbtl.json();
-            const spjbtlServer = resSpjbtl.pdfBase64 || resSpjbtl.data || resSpjbtl.result;
 
             const docSpjbtl = await PDFLib.PDFDocument.load(base64ToUint8Array(spjbtlServer));
             const pageSpjbtl = docSpjbtl.getPages()[docSpjbtl.getPageCount() - 1];
@@ -2236,36 +2300,28 @@
             base64SpjbtlFinal = uint8ArrayToBase64(await docSpjbtl.save());
           }
 
-          // 7. Pengiriman Data Kembali ke Server via Fetch
-          const responseSimpan = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "timpaPdfGanda",
-              fileBaId: CURRENT_FILE_BA_ID,
-              base64BaFinal: base64BaFinal,
-              fileSpjbtlId: CURRENT_FILE_SPJBTL_ID,
-              base64SpjbtlFinal: base64SpjbtlFinal,
-              noAgenda: CURRENT_NO_AGENDA
+          // 7. Pengiriman Data Kembali ke Server
+          google.script.run
+            .withSuccessHandler(() => {
+              loadingModal.classList.remove('active');
+              tampilkanPopupNotif("Berhasil disimpan", "Berita acara dan tanda tangan berhasil disimpan.", true);
+              btnSubmit.disabled = false;
+
+              // Reset semua input form & tanda tangan
+              resetFormPetugas();
+
+              // Reset bar pencarian & sembunyikan form eksekusi
+              document.getElementById('searchNoAgenda').value = "";
+              document.getElementById('searchStatus').innerText = "";
+              document.getElementById('formPetugasContent').classList.add('hidden');
+              CURRENT_JENIS_TRANSAKSI = "";
             })
-          });
-
-          const resSimpan = await responseSimpan.json();
-
-          loadingModal.classList.remove('active');
-          btnSubmit.disabled = false;
-
-          if (resSimpan.success) {
-            tampilkanPopupNotif("Berhasil disimpan", "Berita acara dan tanda tangan berhasil disimpan.", true);
-
-            resetFormPetugas();
-
-            document.getElementById('searchNoAgenda').value = "";
-            document.getElementById('searchStatus').innerText = "";
-            document.getElementById('formPetugasContent').classList.add('hidden');
-            CURRENT_JENIS_TRANSAKSI = "";
-          } else {
-            tampilkanPopupNotif("Gagal", "Error: " + (resSimpan.message || "Gagal menyimpan data"), false);
-          }
+            .withFailureHandler((error) => {
+              loadingModal.classList.remove('active');
+              tampilkanPopupNotif("Gagal", "Error: " + error.message, false);
+              btnSubmit.disabled = false;
+            })
+            .timpaPdfGanda(CURRENT_FILE_BA_ID, base64BaFinal, CURRENT_FILE_SPJBTL_ID, base64SpjbtlFinal, CURRENT_NO_AGENDA);
 
         } catch (errPdf) {
           loadingModal.classList.remove('active');
@@ -2402,44 +2458,35 @@
       // MODUL PETUGAS: REVIEW DOKUMEN SEBELUM TANDA TANGAN PELANGGAN
       // ==========================================================================
 
-      async function bukaReviewPDF() {
+      function bukaReviewPDF() {
         const noAgenda = document.getElementById('searchNoAgenda').value;
         if (!noAgenda) {
-          alert('Mohon masukkan atau cari No Agenda terlebih dahulu.');
-          return;
+            alert('Mohon masukkan atau cari No Agenda terlebih dahulu.');
+            return;
         }
 
-        // Berikan delay sedikit sebelum modal terbuka
+        // Berikan delay sedikit (misal 400 milidetik) sebelum modal/panel terbuka
         setTimeout(() => {
-          const modalReview = document.getElementById('modalReviewPDF');
-          if (modalReview) {
-            modalReview.classList.remove('hidden');
-          }
+            const modalReview = document.getElementById('modalReviewPDF');
+            if (modalReview) {
+                modalReview.classList.remove('hidden');
+            }
         }, 600);
 
-        try {
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "generatePDFBeritaAcaraDanSPJBTL",
-              noAgenda: noAgenda
-            })
-          });
-
-          const res = await response.json();
-
-          if (res && res.success) {
-            const iframeBA = document.getElementById('iframeBeritaAcara');
-            const iframeSpj = document.getElementById('iframeSpjbtl');
-            
-            if (iframeBA) iframeBA.src = res.beritaAcaraUrl || '';
-            if (iframeSpj) iframeSpj.src = res.spjbtlUrl || '';
-          } else {
-            alert((res && res.message) || 'Gagal memuat dokumen PDF.');
-          }
-        } catch (error) {
-          alert('Terjadi kesalahan sistem: ' + (error.message || error));
-        }
+        // Proses pengambilan URL PDF di background tetap berjalan
+        google.script.run.withSuccessHandler(function(response) {
+            if (response && response.success) {
+                const iframeBA = document.getElementById('iframeBeritaAcara');
+                const iframeSpj = document.getElementById('iframeSpjbtl');
+                
+                if (iframeBA) iframeBA.src = response.beritaAcaraUrl || '';
+                if (iframeSpj) iframeSpj.src = response.spjbtlUrl || '';
+            } else {
+                alert((response && response.message) || 'Gagal memuat dokumen PDF.');
+            }
+        }).withFailureHandler(function(error) {
+            alert('Terjadi kesalahan sistem: ' + (error.message || error));
+        }).generatePDFBeritaAcaraDanSPJBTL(noAgenda);
       }
 
       function tutupModalPDF() {
@@ -2488,64 +2535,58 @@
       }
 
       /**
-       * Memuat daftar agenda berstatus 'Selesai' yang membutuhkan approval Manager via API Fetch.
+       * Memuat daftar agenda berstatus 'Selesai' yang membutuhkan approval Manager.
        */
-      async function muatListAgendaManager() {
+      function muatListAgendaManager() {
         const tableContainer = document.getElementById('listAgendaTable');
         tableContainer.innerHTML = "Memuat data...";
 
-        try {
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "getAgendaSelesaiList",
-              ulp: CURRENT_USER_ULP,
-              up3: CURRENT_USER_UP3
-            })
-          });
+        google.script.run
+          .withSuccessHandler((dataList) => {
+            if (!dataList || dataList.length === 0) {
+              tableContainer.innerHTML = `
+                <p style="color: #64748b; font-style: italic;">
+                  Belum ada agenda berstatus 'Selesai' dari petugas.
+                </p>`;
+              return;
+            }
 
-          const dataList = await response.json();
+            // Generate baris tabel secara dinamis menggunakan Array.map
+            const rowsHtml = dataList.map((item) => `
+              <tr>
+                <td><b>${item.noAgenda}</b></td>
+                <td>${item.nama}</td>
+                <td>
+                  <button class="btn-pilih" onclick='pilihAgendaManager(${JSON.stringify(item)})'>
+                    Pilih & TTD
+                  </button>
+                </td>
+              </tr>
+            `).join('');
 
-          if (!dataList || dataList.length === 0) {
             tableContainer.innerHTML = `
-              <p style="color: #64748b; font-style: italic;">
-                Belum ada agenda berstatus 'Selesai' dari petugas.
-              </p>`;
-            return;
-          }
-
-          const rowsHtml = dataList.map((item) => `
-            <tr>
-              <td><b>${item.noAgenda}</b></td>
-              <td>${item.nama}</td>
-              <td>
-                <button class="btn-pilih" onclick='pilihAgendaManager(${JSON.stringify(item)})'>
-                  Pilih & TTD
-                </button>
-              </td>
-            </tr>
-          `).join('');
-
-          tableContainer.innerHTML = `
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>No Agenda</th>
-                  <th>Nama Pelanggan</th>
-                  <th>Aksi</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${rowsHtml}
-              </tbody>
-            </table>`;
-        } catch (err) {
-          tableContainer.innerHTML = `<span style="color:red">Gagal memuat data: ${err.message}</span>`;
-        }
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>No Agenda</th>
+                    <th>Nama Pelanggan</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>`;
+          })
+          .withFailureHandler((err) => {
+            tableContainer.innerHTML = `<span style="color:red">Gagal memuat data: ${err.message}</span>`;
+          })
+          .getAgendaSelesaiList(CURRENT_USER_ULP, CURRENT_USER_UP3);
       }
 
       /**
        * Memilih agenda untuk disetujui dan menampilkan form tanda tangan Manager.
+       * @param {Object} item - Data agenda permohonan pelanggan.
        */
       function pilihAgendaManager(item) {
         MGR_PERMOHONAN_ID = item.filePermohonanId || "";
@@ -2574,25 +2615,21 @@
        * Menutup form tanda tangan Manager dan kembali ke daftar agenda.
        */
       function tutupFormManager() {
-        resetFormManager();
+        resetFormManager(); // 🟢 Bersihkan TTD & Data transaksi Manager
         document.getElementById('formManagerContent').classList.add('hidden');
         document.getElementById('managerTableContainer').classList.remove('hidden');
         muatListAgendaManager();
       }
 
       /**
-       * Memproses penyematan tanda tangan Manager ke satu berkas PDF via API Fetch.
+       * Memproses penyematan tanda tangan Manager ke satu berkas PDF.
        */
       async function signManagerPdf(fileId, ttdBase64, coordX, coordY, isLastPage, customWidth = 100, customHeight = 45) {
         if (!fileId || String(fileId).trim() === "") return null;
 
-        const response = await fetch(WEB_APP_URL, {
-          method: "POST",
-          body: JSON.stringify({ action: "getPdfAsli", fileId: fileId })
+        const fileServer = await new Promise((res, rej) => {
+          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getPdfAsli(fileId);
         });
-
-        const res = await response.json();
-        const fileServer = res.pdfBase64 || res.data || res.result;
 
         const doc = await PDFLib.PDFDocument.load(base64ToUint8Array(fileServer));
         const targetPageIdx = isLastPage ? doc.getPageCount() - 1 : 0;
@@ -2605,7 +2642,7 @@
       }
 
       /**
-       * Memproses penandatanganan 4 dokumen PDF secara bersamaan (paralel) oleh Manager via API Fetch.
+       * Memproses penandatanganan 4 dokumen PDF secara bersamaan (paralel) oleh Manager.
        */
       async function prosesManagerTTD() {
         if (!padManager || padManager.isEmpty()) {
@@ -2646,28 +2683,20 @@
             spjbtl: base64Spjbtl
           };
 
-          // Pengiriman hasil PDF ke server via Fetch
-          const response = await fetch(WEB_APP_URL, {
-            method: "POST",
-            body: JSON.stringify({
-              action: "timpaPdfManagerEmpat",
-              fileIdsObj: fileIdsObj,
-              base64ListObj: base64ListObj,
-              noAgenda: MGR_NO_AGENDA
+          // Pengiriman hasil PDF yang sudah ditandatangani kembali ke server
+          google.script.run
+            .withSuccessHandler((resMsg) => {
+              loadingModal.classList.remove('active');
+              tampilkanPopupNotif("Berhasil disimpan", "Dokumen berhasil ditandatangani dan disimpan.", true);
+              btnSubmit.disabled = false;
+              setTimeout(() => { tutupFormManager(); }, 1200);
             })
-          });
-
-          const res = await response.json();
-
-          loadingModal.classList.remove('active');
-          btnSubmit.disabled = false;
-
-          if (res.success || res.status === "success") {
-            tampilkanPopupNotif("Berhasil disimpan", "Dokumen berhasil ditandatangani dan disimpan.", true);
-            setTimeout(() => { tutupFormManager(); }, 1200);
-          } else {
-            tampilkanPopupNotif("Gagal", "Error: " + (res.message || "Gagal menyimpan data"), false);
-          }
+            .withFailureHandler((error) => {
+              loadingModal.classList.remove('active');
+              tampilkanPopupNotif("Gagal", "Error: " + error.message, false);
+              btnSubmit.disabled = false;
+            })
+            .timpaPdfManagerEmpat(fileIdsObj, base64ListObj, MGR_NO_AGENDA);
 
         } catch (errMgr) {
           loadingModal.classList.remove('active');
@@ -2840,6 +2869,7 @@
 
       /**
        * Memproses dan menganalisis kecocokan data file Excel dengan berkas-berkas PDF kolektif.
+       * Dilengkapi dengan validasi panjang digit No Agenda dan rincian status error spesifik.
        */
       async function prosesAnalisisKolektif() {
         const fileExcel   = document.getElementById('fileExcelKolektif').files[0];
@@ -2860,18 +2890,13 @@
         loadingModal.classList.add('active');
 
         try {
-          // 1. Ambil daftar No Agenda dari server via API Fetch
-          let existingAgendasList = [];
-          try {
-            const respAgenda = await fetch(WEB_APP_URL, {
-              method: "POST",
-              body: JSON.stringify({ action: "getExistingAgendaList" })
-            });
-            const resAgendaData = await respAgenda.json();
-            existingAgendasList = Array.isArray(resAgendaData) ? resAgendaData : (resAgendaData.data || []);
-          } catch (e) {
-            existingAgendasList = [];
-          }
+          // 1. Ambil daftar No Agenda yang sudah ada di database Google Sheet
+          const existingAgendasList = await new Promise((resolve) => {
+            google.script.run
+              .withSuccessHandler(resolve)
+              .withFailureHandler(() => resolve([]))
+              .getExistingAgendaList();
+          });
 
           const existingAgendaSet = new Set(existingAgendasList.map(a => String(a).toLowerCase().trim()));
           const seenAgendasInExcel = new Set();
@@ -2904,8 +2929,12 @@
             const qIdPel    = row.idPelanggan ? String(row.idPelanggan).toLowerCase().trim() : "";
             const excelNama = row.nama ? String(row.nama).trim() : "";
 
+            // -------------------------------------------------------------
+            // PENGECEKAN 1: Validasi Panjang No Agenda (Mesti 18 Digit)
+            // -------------------------------------------------------------
             const isAgendaValidLength = qAgenda.length === 18;
 
+            // Cek Duplikat di Database & Duplikat internal File Excel
             let isDuplicateDb    = existingAgendaSet.has(qAgenda);
             let isDuplicateExcel = seenAgendasInExcel.has(qAgenda);
             seenAgendasInExcel.add(qAgenda);
@@ -2926,9 +2955,13 @@
             const isValidNamePk         = verifikasiNamaPdf(parsedPk.pagesText[pIndexPk]?.text, excelNama);
             const isValidNameBa         = verifikasiNamaPdf(parsedBa.pagesText[pIndexBa]?.text, excelNama);
 
+            // -------------------------------------------------------------
+            // Evaluasi Kelayakan Data & Rincian Pesan Error Spesifik
+            // -------------------------------------------------------------
             let isValidData = true;
             let alasanGagal = [];
 
+            // Poin Utama: Jika No Agenda kurang dari 18 digit
             if (!isAgendaValidLength) {
               isValidData = false;
               alasanGagal.push("No Agenda kurang 18 digit");
@@ -2944,6 +2977,7 @@
               alasanGagal.push("No Agenda Ganda di Excel Ini");
             }
 
+            // Hanya validasi nama jika No Agenda memenuhi syarat 18 digit
             if (isAgendaValidLength) {
               let namaGagalDokumen = [];
               if (!isValidNamePermohonan) namaGagalDokumen.push("Permohonan");
@@ -2995,6 +3029,7 @@
 
           loadingModal.classList.remove('active');
           
+          // Update Ringkasan Data Tidak Valid & Tombol Eksport
           const elJumlahInvalid = document.getElementById('cntDataTidakValid');
           const btnExportInvalid = document.getElementById('btnExportDataInvalid');
           
@@ -3022,7 +3057,7 @@
       }
 
       /**
-       * Meng-export baris data yang berstatus Tidak Valid ke file Excel (.xlsx).
+       * Meng-eksport baris data yang berstatus Tidak Valid ke file Excel (.xlsx).
        */
       function exportDataTidakValidKolektif() {
         const invalidItems = DATA_REVIEW_KOLEKTIF_GLOBAL.filter(item => !item.isValid);
@@ -3063,7 +3098,7 @@
       }
 
       /**
-       * Menyimpan berkas dan data kolektif ke server via API Fetch (HANYA DATA BERSTATUS VALID).
+       * Menyimpan berkas dan data kolektif ke server (HANYA DATA BERSTATUS VALID).
        */
       async function approveSimpanKolektif() {
         const validItems = DATA_REVIEW_KOLEKTIF_GLOBAL.filter(item => item.isValid);
@@ -3087,7 +3122,6 @@
             loadingText.innerText = `Menyimpan data (${i + 1} dari ${totalValid})...`;
 
             const payloadFolder = {
-              action: "simpanDataAdmin",
               noAgenda: item.noAgenda,
               idPelanggan: item.idPelanggan,
               nama: item.nama,
@@ -3101,15 +3135,12 @@
               fileSpjbtl: item.fileSpjbtl
             };
 
-            const response = await fetch(WEB_APP_URL, {
-              method: "POST",
-              body: JSON.stringify(payloadFolder)
+            await new Promise((resolve, reject) => {
+              google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .simpanDataAdmin(payloadFolder);
             });
-
-            const res = await response.json();
-            if (!res.success && res.status !== "success") {
-              throw new Error(res.message || `Gagal menyimpan agenda ${item.noAgenda}`);
-            }
           }
 
           loadingModal.classList.remove('active');
